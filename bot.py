@@ -81,6 +81,48 @@ def is_allowed(update: Update) -> bool:
     return str(update.effective_chat.id) == str(TELEGRAM_CHAT_ID)
 
 
+def parse_reminder_from_text(text: str) -> int | None:
+    """Извлекает кастомное время напоминания в минутах: 'напомни за 30 минут'."""
+    t = text.lower()
+    m = re.search(
+        r"(?:напомни|предупреди|напомнить|предупредить)\s+за\s+(\d+)\s*(минут|мин|часа?|часов)",
+        t,
+    )
+    if m:
+        n, unit = int(m.group(1)), m.group(2)
+        return n if "мин" in unit else n * 60
+    if re.search(r"(?:напомни|предупреди)\s+за\s+час\b", t):
+        return 60
+    if re.search(r"(?:напомни|предупреди)\s+за\s+полчаса", t):
+        return 30
+    m = re.search(r"за\s+(\d+)\s*(минут|мин|часа?|часов)\s+до", t)
+    if m:
+        n, unit = int(m.group(1)), m.group(2)
+        return n if "мин" in unit else n * 60
+    return None
+
+
+def extract_title_from_voice(text: str) -> str:
+    """Извлекает название задачи из голосового, убирая дату и фразу о напоминании."""
+    t = text
+    # убрать "напомни за ..."
+    t = re.sub(
+        r"(?:напомни|предупреди|напомнить|предупредить)\s+за\s+\S+(?:\s+\S+)?",
+        "", t, flags=re.IGNORECASE,
+    )
+    # убрать "через N единиц"
+    t = re.sub(r"через\s+\d+\s*(?:часа?|часов|мин|минут|день|дней|дня)", "", t, flags=re.IGNORECASE)
+    # убрать "сегодня/завтра в ЧЧ:ММ"
+    t = re.sub(r"(?:сегодня|завтра)\s+(?:в\s+)?\d{1,2}[:.]\d{2}", "", t, flags=re.IGNORECASE)
+    # убрать "в ЧЧ:ММ"
+    t = re.sub(r"\bв\s+\d{1,2}[:.]\d{2}", "", t, flags=re.IGNORECASE)
+    # убрать ДД.ММ.ГГГГ ЧЧ:ММ
+    t = re.sub(r"\d{1,2}[./]\d{2}(?:[./]\d{4})?\s+\d{1,2}:\d{2}", "", t, flags=re.IGNORECASE)
+    t = re.sub(r"[,\s]+$", "", t.strip())
+    t = re.sub(r"\s{2,}", " ", t).strip()
+    return t or text[:80]
+
+
 def parse_datetime_from_text(text: str) -> datetime | None:
     """
     Парсит дату/время из текста.
@@ -421,12 +463,25 @@ async def _save_task_from_store(update_or_query, chat_id: int):
     tz = pytz.timezone(TIMEZONE)
     dt_aware = tz.localize(dt) if dt.tzinfo is None else dt
 
+    reminder_mins = data.get("custom_reminder", REMINDER_MINUTES)
+    if isinstance(reminder_mins, int):
+        reminder_mins = [reminder_mins]
+    if len(reminder_mins) == 1:
+        h, m_r = divmod(reminder_mins[0], 60)
+        reminder_label = (f"за {h} ч" if h and not m_r else
+                          f"за {m_r} мин" if not h else f"за {h} ч {m_r} мин")
+    else:
+        reminder_label = " и ".join(
+            f"{r // 60} ч" if r >= 60 and r % 60 == 0 else f"{r} мин"
+            for r in reminder_mins
+        )
+
     try:
         event = create_calendar_event(
             title=title,
             description=comment,
             dt=dt_aware,
-            reminder_minutes=REMINDER_MINUTES,
+            reminder_minutes=reminder_mins,
             attachments=attachments if attachments else None,
         )
         event_link = event.get("htmlLink", "")
@@ -442,7 +497,7 @@ async def _save_task_from_store(update_or_query, chat_id: int):
             f"📅 {dt_str}\n"
             f"💬 {comment if comment else '—'}"
             f"{attach_text}\n\n"
-            f"🔔 Напомню за 60 и 15 минут\n"
+            f"🔔 Напомню {reminder_label}\n"
             f"🔗 [Открыть в Calendar]({event_link})"
         )
 
@@ -469,6 +524,40 @@ async def _save_task_from_store(update_or_query, chat_id: int):
 # ГОЛОСОВЫЕ СООБЩЕНИЯ
 # ==============================================
 
+def _voice_summary_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ Создать", callback_data="voice_confirm"),
+            InlineKeyboardButton("✏️ Изменить", callback_data="voice_edit"),
+        ],
+        [InlineKeyboardButton("📎 Добавить файл", callback_data="voice_add_file")],
+    ])
+
+
+def _voice_summary_text(chat_id: int) -> str:
+    data = user_data_store.get(chat_id, {})
+    title = data.get("title", "—")
+    dt = data.get("datetime")
+    dt_str = dt.strftime("%d.%m.%Y %H:%M") if dt else "не указано"
+    custom = data.get("custom_reminder")
+    if custom:
+        h, m = divmod(custom[0], 60)
+        reminder_label = (f"за {h} ч" if h and not m else
+                          f"за {m} мин" if not h else f"за {h} ч {m} мин")
+    else:
+        reminder_label = f"за {REMINDER_MINUTES[0]} и {REMINDER_MINUTES[1]} мин"
+    attachments = data.get("attachments", [])
+    attach_line = f"\n📎 Вложений: {len(attachments)}" if attachments else ""
+    return (
+        f"🎯 *Понял!*\n\n"
+        f"📌 *{title}*\n"
+        f"📅 {dt_str}\n"
+        f"🔔 Напомню {reminder_label}"
+        f"{attach_line}\n\n"
+        f"Создать задачу?"
+    )
+
+
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_allowed(update):
         return
@@ -481,11 +570,12 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = await transcribe_voice(file_path)
         os.unlink(file_path)
 
-        await msg.edit_text(f"📝 Распознано:\n_{text}_\n\nОбрабатываю...", parse_mode="Markdown")
-
         dt = parse_datetime_from_text(text)
+        reminder_min = parse_reminder_from_text(text)
+        title = extract_title_from_voice(text)
+
         user_data_store[chat_id] = {
-            "title": text[:100],
+            "title": title,
             "comment": text,
             "attachments": [],
             "from_voice": True,
@@ -493,21 +583,18 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if dt:
             user_data_store[chat_id]["datetime"] = dt
-            keyboard = [[
-                InlineKeyboardButton("✅ Создать", callback_data="voice_confirm"),
-                InlineKeyboardButton("✏️ Изменить", callback_data="voice_edit"),
-            ]]
+        if reminder_min:
+            user_data_store[chat_id]["custom_reminder"] = [reminder_min]
+
+        if dt:
             await msg.edit_text(
-                f"🎯 *Понял!*\n\n"
-                f"📌 *{text[:80]}{'…' if len(text)>80 else ''}*\n"
-                f"📅 {dt.strftime('%d.%m.%Y %H:%M')}\n\n"
-                f"Создать задачу?",
+                _voice_summary_text(chat_id),
                 parse_mode="Markdown",
-                reply_markup=InlineKeyboardMarkup(keyboard),
+                reply_markup=_voice_summary_keyboard(),
             )
         else:
             await msg.edit_text(
-                f"🎤 *Записал:*\n_{text}_\n\n"
+                f"🎤 *Записал:* _{text}_\n\n"
                 "📅 Не нашёл дату. Введи дату и время:\n"
                 "`сегодня в 14:30`  /  `через 2 часа`  /  `25.04 14:30`",
                 parse_mode="Markdown",
@@ -535,6 +622,15 @@ async def voice_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown",
     )
     context.user_data["voice_wait_title"] = True
+
+
+async def voice_add_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    context.user_data["voice_waiting_file"] = True
+    await query.edit_message_text(
+        "📎 Отправь фото или файл — прикреплю к задаче.",
+    )
 
 
 # ==============================================
@@ -578,7 +674,20 @@ async def handle_attachment(update: Update, context: ContextTypes.DEFAULT_TYPE):
         os.unlink(local_path)
 
         store = user_data_store.get(chat_id, {})
-        if store.get("datetime"):
+        if store.get("datetime") and context.user_data.pop("voice_waiting_file", False):
+            store.setdefault("attachments", []).append(drive_file)
+            user_data_store[chat_id] = store
+            await status.edit_text(
+                f"✅ {file_type} прикреплён!\n"
+                f"🔗 [Открыть на Drive]({drive_file['link']})",
+                parse_mode="Markdown",
+            )
+            await msg.reply_text(
+                _voice_summary_text(chat_id),
+                parse_mode="Markdown",
+                reply_markup=_voice_summary_keyboard(),
+            )
+        elif store.get("datetime"):
             store.setdefault("attachments", []).append(drive_file)
             user_data_store[chat_id] = store
             await status.edit_text(
@@ -724,6 +833,7 @@ def main():
     ))
     app.add_handler(CallbackQueryHandler(voice_confirm, pattern="^voice_confirm$"))
     app.add_handler(CallbackQueryHandler(voice_edit, pattern="^voice_edit$"))
+    app.add_handler(CallbackQueryHandler(voice_add_file, pattern="^voice_add_file$"))
     app.add_handler(CallbackQueryHandler(attach_drive_only, pattern="^attach_drive_only$"))
 
     logger.info("CalBot запущен ✅")
