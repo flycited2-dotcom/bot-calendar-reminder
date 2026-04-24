@@ -8,9 +8,11 @@ import re
 import tempfile
 from datetime import datetime, timedelta
 
+import subprocess
+import wave
 import pytz
-import openai
 import requests as req
+import speech_recognition as sr
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import (
@@ -29,7 +31,6 @@ from config import (
     REMINDER_MINUTES,
     TIMEZONE,
     YOUR_EMAIL,
-    OPENAI_API_KEY,
     TEMP_DIR,
     BOT_LOG,
 )
@@ -204,16 +205,20 @@ def parse_datetime_from_text(text: str) -> datetime | None:
 # ==============================================
 
 async def transcribe_voice(file_path: str) -> str:
-    if OPENAI_API_KEY == "ВАШ_OPENAI_API_KEY" or not OPENAI_API_KEY:
-        raise ValueError("OpenAI API ключ не настроен. Обратитесь к администратору.")
-    client = openai.OpenAI(api_key=OPENAI_API_KEY)
-    with open(file_path, "rb") as audio_file:
-        result = client.audio.transcriptions.create(
-            model="whisper-1",
-            file=audio_file,
-            language="ru",
+    """Конвертирует OGG в WAV и распознаёт речь через Google Speech Recognition (бесплатно)."""
+    wav_path = file_path.replace(".ogg", ".wav")
+    try:
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", file_path, "-ar", "16000", "-ac", "1", wav_path],
+            check=True, capture_output=True,
         )
-    return result.text
+        recognizer = sr.Recognizer()
+        with sr.AudioFile(wav_path) as source:
+            audio = recognizer.record(source)
+        return recognizer.recognize_google(audio, language="ru-RU")
+    finally:
+        if os.path.exists(wav_path):
+            os.unlink(wav_path)
 
 
 async def download_telegram_file(file_id: str, context: ContextTypes.DEFAULT_TYPE, suffix: str = "") -> str:
