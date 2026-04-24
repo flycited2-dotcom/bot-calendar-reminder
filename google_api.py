@@ -7,6 +7,7 @@ import base64
 import logging
 import mimetypes
 from datetime import datetime, timedelta
+from email.header import Header
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
@@ -217,7 +218,7 @@ def send_email(to: str, subject: str, body_html: str, attachment_paths: list = N
         message = MIMEMultipart("mixed")
         message["to"] = to
         message["from"] = YOUR_EMAIL
-        message["subject"] = subject
+        message["subject"] = Header(subject, "utf-8").encode()
 
         alt_part = MIMEMultipart("alternative")
         alt_part.attach(MIMEText(body_html, "html", "utf-8"))
@@ -236,7 +237,7 @@ def send_email(to: str, subject: str, body_html: str, attachment_paths: list = N
                 part.add_header("Content-Disposition", "attachment", filename=os.path.basename(path))
                 message.attach(part)
 
-        raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
+        raw = base64.urlsafe_b64encode(message.as_string().encode("utf-8")).decode()
         service.users().messages().send(userId="me", body={"raw": raw}).execute()
         logger.info(f"Email отправлен на {to}: {subject}")
         return True
