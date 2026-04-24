@@ -513,7 +513,15 @@ async def _save_task_from_store(update_or_query, chat_id: int):
             # restore menu via separate message
             await update_or_query.message.reply_text("Главное меню 👇", reply_markup=MAIN_MENU)
 
-        send_email(YOUR_EMAIL, f"📌 CalBot: {title} — {dt_str}", f"<b>{title}</b><br>{dt_str}<br>{comment}")
+        attach_html = ""
+        if attachments:
+            links = "".join(f'<li><a href="{a["link"]}">{a["name"]}</a></li>' for a in attachments)
+            attach_html = f"<br><b>Вложения:</b><ul>{links}</ul>"
+        send_email(
+            YOUR_EMAIL,
+            f"Задача создана: {title} — {dt_str}",
+            f"<b>{title}</b><br>{dt_str}<br>{comment or ''}{attach_html}",
+        )
         user_data_store.pop(chat_id, None)
 
     except Exception as e:
