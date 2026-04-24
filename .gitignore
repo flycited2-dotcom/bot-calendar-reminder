@@ -1,0 +1,8 @@
+.claude/
+credentials.json
+token.json
+*.pyc
+__pycache__/
+venv/
+*.log
+sent_reminders.json

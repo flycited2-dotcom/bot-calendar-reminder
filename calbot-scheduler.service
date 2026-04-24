@@ -1,0 +1,16 @@
+[Unit]
+Description=CalBot Scheduler (напоминания)
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/calbot
+ExecStart=/root/calbot/venv/bin/python scheduler.py
+Restart=always
+RestartSec=10
+StandardOutput=append:/root/calbot/scheduler.log
+StandardError=append:/root/calbot/scheduler.log
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,16 @@
+[Unit]
+Description=CalBot Telegram Bot
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/calbot
+ExecStart=/root/calbot/venv/bin/python bot.py
+Restart=always
+RestartSec=10
+StandardOutput=append:/root/calbot/bot.log
+StandardError=append:/root/calbot/bot.log
+
+[Install]
+WantedBy=multi-user.target
