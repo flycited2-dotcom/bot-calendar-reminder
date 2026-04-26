@@ -244,6 +244,27 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def restart_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_allowed(update):
+        return
+    await update.message.reply_text("🔄 Перезапускаю бота...", reply_markup=MAIN_MENU)
+    subprocess.Popen(
+        ["bash", "-c", "sleep 2 && systemctl restart calbot.service"],
+        start_new_session=True,
+    )
+
+
+async def logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_allowed(update):
+        return
+    result = subprocess.run(
+        ["tail", "-n", "20", BOT_LOG],
+        capture_output=True, text=True,
+    )
+    text = result.stdout.strip() or "Лог пуст."
+    await update.message.reply_text(f"```\n{text[-3500:]}\n```", parse_mode="Markdown")
+
+
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_allowed(update):
         return
@@ -372,7 +393,7 @@ async def attach_add_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def add_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     title = update.message.text.strip()
-    user_data_store[chat_id]["title"] = title
+    user_data_store.setdefault(chat_id, {})["title"] = title
     await update.message.reply_text(
         f"✅ Название: *{title}*\n\n"
         "📅 *Шаг 2/3 — Дата и время*\n\n"
@@ -802,8 +823,20 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ЗАПУСК
 # ==============================================
 
+async def _post_init(application):
+    try:
+        await application.bot.send_message(
+            chat_id=TELEGRAM_CHAT_ID,
+            text="👋 *CalBot запущен*\n\nВыбери действие 👇",
+            parse_mode="Markdown",
+            reply_markup=MAIN_MENU,
+        )
+    except Exception as e:
+        logger.warning(f"Не удалось отправить стартовое меню: {e}")
+
+
 def main():
-    app = Application.builder().token(TELEGRAM_TOKEN).build()
+    app = Application.builder().token(TELEGRAM_TOKEN).post_init(_post_init).build()
 
     conv_handler = ConversationHandler(
         entry_points=[
@@ -834,6 +867,8 @@ def main():
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler("restart", restart_command))
+    app.add_handler(CommandHandler("logs", logs_command))
     app.add_handler(CommandHandler("today", today_events))
     app.add_handler(CommandHandler("tomorrow", tomorrow_events))
     app.add_handler(CommandHandler("week", week_events))

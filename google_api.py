@@ -237,7 +237,7 @@ def send_email(to: str, subject: str, body_html: str, attachment_paths: list = N
                 part.add_header("Content-Disposition", "attachment", filename=os.path.basename(path))
                 message.attach(part)
 
-        raw = base64.urlsafe_b64encode(message.as_string().encode("utf-8")).decode()
+        raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
         service.users().messages().send(userId="me", body={"raw": raw}).execute()
         logger.info(f"Email отправлен на {to}: {subject}")
         return True
