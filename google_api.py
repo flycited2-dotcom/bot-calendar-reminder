@@ -14,6 +14,7 @@ from email.mime.base import MIMEBase
 from email import encoders
 
 from google.auth.transport.requests import Request
+from google.auth.exceptions import RefreshError
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
@@ -25,6 +26,10 @@ from config import SCOPES, CREDENTIALS_FILE, TOKEN_FILE, CALENDAR_ID, TIMEZONE, 
 logger = logging.getLogger(__name__)
 
 
+class NeedsReauthError(Exception):
+    """Raised when Google OAuth token is missing or revoked."""
+
+
 def get_google_credentials():
     """Получить или обновить Google OAuth credentials."""
     creds = None
@@ -32,16 +37,34 @@ def get_google_credentials():
         creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
+            try:
+                creds.refresh(Request())
+                with open(TOKEN_FILE, "w") as token:
+                    token.write(creds.to_json())
+            except RefreshError:
+                try:
+                    os.remove(TOKEN_FILE)
+                except FileNotFoundError:
+                    pass
+                raise NeedsReauthError()
         else:
-            flow = InstalledAppFlow.from_client_secrets_file(CREDENTIALS_FILE, SCOPES)
-            auth_url, _ = flow.authorization_url(prompt="consent", access_type="offline")
-            print(f"\nОткройте эту ссылку в браузере:\n{auth_url}\n")
-            code = input("Вставьте код авторизации: ").strip()
-            flow.fetch_token(code=code)
-            creds = flow.credentials
-        with open(TOKEN_FILE, "w") as token:
-            token.write(creds.to_json())
+            raise NeedsReauthError()
+    return creds
+
+
+def get_google_auth_url() -> tuple:
+    """Вернуть (auth_url, flow) для ручного OAuth-потока."""
+    flow = InstalledAppFlow.from_client_secrets_file(CREDENTIALS_FILE, SCOPES)
+    auth_url, _ = flow.authorization_url(prompt="consent", access_type="offline")
+    return auth_url, flow
+
+
+def save_google_token_from_code(flow, code: str):
+    """Обменять код авторизации на токен и сохранить token.json."""
+    flow.fetch_token(code=code)
+    creds = flow.credentials
+    with open(TOKEN_FILE, "w") as token:
+        token.write(creds.to_json())
     return creds
 
 

@@ -39,6 +39,9 @@ from google_api import (
     get_events_for_day,
     send_email,
     upload_to_drive,
+    NeedsReauthError,
+    get_google_auth_url,
+    save_google_token_from_code,
 )
 
 logging.basicConfig(
@@ -56,6 +59,9 @@ WAIT_TITLE, WAIT_DATETIME, WAIT_COMMENT, WAIT_ATTACHMENTS = range(4)
 
 # Временное хранилище
 user_data_store = {}
+
+# Ожидающий OAuth flow (для /reauth)
+_pending_oauth_flow = None
 
 # Главное меню — постоянные кнопки внизу экрана
 MAIN_MENU = ReplyKeyboardMarkup(
@@ -263,6 +269,52 @@ async def logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     text = result.stdout.strip() or "Лог пуст."
     await update.message.reply_text(f"```\n{text[-3500:]}\n```", parse_mode="Markdown")
+
+
+async def _send_reauth_prompt(send_fn):
+    """Отправить инструкцию по повторной авторизации Google."""
+    global _pending_oauth_flow
+    try:
+        auth_url, flow = get_google_auth_url()
+        _pending_oauth_flow = flow
+        await send_fn(
+            "🔐 *Google-авторизация истекла*\n\n"
+            "1\\. Открой ссылку ниже и разреши доступ\n"
+            "2\\. Скопируй код со страницы\n"
+            "3\\. Отправь боту: `/reauth КОД`\n\n"
+            f"`{auth_url}`",
+            parse_mode="MarkdownV2",
+            disable_web_page_preview=True,
+        )
+    except Exception as e:
+        await send_fn(f"❌ Не удалось сформировать ссылку авторизации: {e}")
+
+
+async def reauth_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global _pending_oauth_flow
+    if not is_allowed(update):
+        return
+    if context.args:
+        code = context.args[0].strip()
+        if _pending_oauth_flow is None:
+            await update.message.reply_text(
+                "❌ Нет ожидающего запроса. Сначала введи /reauth без аргументов.",
+                reply_markup=MAIN_MENU,
+            )
+            return
+        try:
+            save_google_token_from_code(_pending_oauth_flow, code)
+            _pending_oauth_flow = None
+            await update.message.reply_text(
+                "✅ *Google авторизация обновлена!* Бот снова работает.",
+                parse_mode="Markdown",
+                reply_markup=MAIN_MENU,
+            )
+        except Exception as e:
+            await update.message.reply_text(f"❌ Ошибка авторизации: {e}", reply_markup=MAIN_MENU)
+        return
+
+    await _send_reauth_prompt(update.message.reply_text)
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -545,6 +597,11 @@ async def _save_task_from_store(update_or_query, chat_id: int):
         )
         user_data_store.pop(chat_id, None)
 
+    except NeedsReauthError:
+        send_fn = (update_or_query.message.reply_text
+                   if hasattr(update_or_query, "message")
+                   else update_or_query.edit_message_text)
+        await _send_reauth_prompt(send_fn)
     except Exception as e:
         logger.error(f"Ошибка создания задачи: {e}")
         err = f"❌ Ошибка: {e}"
@@ -635,6 +692,8 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             context.user_data["awaiting_voice_datetime"] = True
 
+    except NeedsReauthError:
+        await _send_reauth_prompt(msg.edit_text)
     except Exception as e:
         logger.error(f"Ошибка голосового: {e}")
         await msg.edit_text(f"❌ Ошибка распознавания:\n{e}", reply_markup=MAIN_MENU)
@@ -742,6 +801,8 @@ async def handle_attachment(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=InlineKeyboardMarkup(keyboard),
             )
 
+    except NeedsReauthError:
+        await _send_reauth_prompt(status.edit_text)
     except Exception as e:
         logger.error(f"Ошибка вложения: {e}")
         await status.edit_text(f"❌ Ошибка загрузки: {e}", reply_markup=MAIN_MENU)
@@ -869,6 +930,7 @@ def main():
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("restart", restart_command))
     app.add_handler(CommandHandler("logs", logs_command))
+    app.add_handler(CommandHandler("reauth", reauth_command))
     app.add_handler(CommandHandler("today", today_events))
     app.add_handler(CommandHandler("tomorrow", tomorrow_events))
     app.add_handler(CommandHandler("week", week_events))
