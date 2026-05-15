@@ -63,15 +63,31 @@ MAIN_MENU = ReplyKeyboardMarkup(
         ["➕ Добавить задачу"],
         ["📋 Сегодня", "📅 Завтра"],
         ["🗓 Неделя", "❓ Помощь"],
+        ["🗑 Удалить задачу"],
     ],
     resize_keyboard=True,
 )
 
-BTN_ADD  = "➕ Добавить задачу"
-BTN_TODAY = "📋 Сегодня"
+BTN_ADD      = "➕ Добавить задачу"
+BTN_TODAY    = "📋 Сегодня"
 BTN_TOMORROW = "📅 Завтра"
-BTN_WEEK = "🗓 Неделя"
-BTN_HELP = "❓ Помощь"
+BTN_WEEK     = "🗓 Неделя"
+BTN_HELP     = "❓ Помощь"
+BTN_DELETE   = "🗑 Удалить задачу"
+
+# Дни недели для парсинга
+_DAY_NAMES = {
+    "понедельник": 0, "пн": 0,
+    "вторник": 1,     "вт": 1,
+    "среду": 2,       "среда": 2, "ср": 2,
+    "четверг": 3,     "чт": 3,
+    "пятницу": 4,     "пятница": 4, "пт": 4,
+    "субботу": 5,     "суббота": 5, "сб": 5,
+    "воскресенье": 6, "вс": 6,
+}
+
+# Временный кэш событий для удаления: {chat_id: [(event_id, summary, dt_str), ...]}
+_delete_cache: dict = {}
 
 
 # ==============================================
@@ -134,6 +150,7 @@ def parse_datetime_from_text(text: str) -> datetime | None:
       - завтра в ЧЧ:ММ
       - через N часов/минут/дней
       - ЧЧ:ММ (сегодня, если время ещё не прошло)
+      - понедельник/вторник/... [в ЧЧ:ММ] — ближайший такой день
     """
     tz = pytz.timezone(TIMEZONE)
     now = datetime.now(tz).replace(tzinfo=None)
@@ -150,6 +167,20 @@ def parse_datetime_from_text(text: str) -> datetime | None:
             return now + timedelta(hours=n)
         else:
             return now + timedelta(days=n)
+
+    # день недели [в ЧЧ:ММ]
+    for day_name, day_num in _DAY_NAMES.items():
+        if re.search(rf"\b{day_name}\b", t):
+            days_ahead = (day_num - now.weekday() + 7) % 7
+            if days_ahead == 0:
+                days_ahead = 7  # если сегодня такой день — берём следующую неделю
+            base = now + timedelta(days=days_ahead)
+            tm2 = re.search(r"(\d{1,2})[:\.](\d{2})", t)
+            if tm2:
+                h, mi = int(tm2.group(1)), int(tm2.group(2))
+                if 0 <= h <= 23 and 0 <= mi <= 59:
+                    return base.replace(hour=h, minute=mi, second=0, microsecond=0)
+            return base.replace(hour=9, minute=0, second=0, microsecond=0)
 
     # сегодня / завтра в ЧЧ:ММ
     time_pat = r"(\d{1,2})[:\.](\d{2})"
@@ -350,6 +381,74 @@ async def _send_events_list(message, target_date: datetime, label: str):
             text += f"\n💬 _{desc[:80]}{'…' if len(desc)>80 else ''}_"
         text += "\n\n"
     await message.reply_text(text, parse_mode="Markdown", reply_markup=MAIN_MENU)
+
+
+# ==============================================
+# УДАЛЕНИЕ ЗАДАЧИ
+# ==============================================
+
+async def delete_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_allowed(update):
+        return
+    chat_id = update.effective_chat.id
+    tz = pytz.timezone(TIMEZONE)
+    now = datetime.now(tz)
+
+    # Собираем события на ближайшие 14 дней
+    all_events = []
+    for i in range(14):
+        day = now + timedelta(days=i)
+        for e in get_events_for_day(day):
+            all_events.append(e)
+
+    if not all_events:
+        await update.message.reply_text("📭 Нет предстоящих событий.", reply_markup=MAIN_MENU)
+        return
+
+    # Сохраняем в кэш
+    _delete_cache[chat_id] = [
+        (
+            e["id"],
+            e.get("summary", "Без названия"),
+            datetime.fromisoformat(e["start"]["dateTime"]).strftime("%d.%m %H:%M")
+            if "dateTime" in e.get("start", {})
+            else e["start"].get("date", ""),
+        )
+        for e in all_events
+    ]
+
+    keyboard = [
+        [InlineKeyboardButton(
+            f"🗑 {item[2]} — {item[1][:35]}",
+            callback_data=f"del_{i}"
+        )]
+        for i, item in enumerate(_delete_cache[chat_id])
+    ]
+    await update.message.reply_text(
+        "Выбери задачу для удаления:",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+
+
+async def delete_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    chat_id = query.message.chat_id
+    idx = int(query.data.split("_")[1])
+    cache = _delete_cache.get(chat_id, [])
+    if idx >= len(cache):
+        await query.edit_message_text("❌ Событие не найдено.")
+        return
+    event_id, summary, dt_str = cache[idx]
+    from google_api import delete_calendar_event
+    ok = delete_calendar_event(event_id)
+    if ok:
+        await query.edit_message_text(
+            f"✅ Удалено: *{summary}* ({dt_str})", parse_mode="Markdown"
+        )
+        _delete_cache.pop(chat_id, None)
+    else:
+        await query.edit_message_text("❌ Не удалось удалить событие.")
 
 
 # ==============================================
@@ -777,6 +876,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if text == BTN_HELP:
         await help_command(update, context)
         return
+    if text == BTN_DELETE:
+        await delete_start(update, context)
+        return
 
     # Ввод даты после голосового
     if context.user_data.get("awaiting_voice_datetime"):
@@ -869,6 +971,7 @@ def main():
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("restart", restart_command))
     app.add_handler(CommandHandler("logs", logs_command))
+    app.add_handler(CommandHandler("delete", delete_start))
     app.add_handler(CommandHandler("today", today_events))
     app.add_handler(CommandHandler("tomorrow", tomorrow_events))
     app.add_handler(CommandHandler("week", week_events))
@@ -883,6 +986,7 @@ def main():
     app.add_handler(CallbackQueryHandler(voice_edit, pattern="^voice_edit$"))
     app.add_handler(CallbackQueryHandler(voice_add_file, pattern="^voice_add_file$"))
     app.add_handler(CallbackQueryHandler(attach_drive_only, pattern="^attach_drive_only$"))
+    app.add_handler(CallbackQueryHandler(delete_confirm, pattern=r"^del_\d+$"))
 
     logger.info("CalBot запущен ✅")
     app.run_polling(drop_pending_updates=True)
