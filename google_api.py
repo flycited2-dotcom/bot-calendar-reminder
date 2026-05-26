@@ -1,5 +1,6 @@
 # ==============================================
-# google_api.py — Google Calendar + Gmail + Drive API
+# google_api.py — Google Calendar + Drive API
+# Авторизация: Service Account (рекомендуется) или OAuth токен (fallback)
 # ==============================================
 
 import os
@@ -15,18 +16,38 @@ from email import encoders
 
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
+from google.oauth2 import service_account
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 import pytz
 
-from config import SCOPES, CREDENTIALS_FILE, TOKEN_FILE, CALENDAR_ID, TIMEZONE, YOUR_EMAIL
+from config import (
+    SCOPES, CREDENTIALS_FILE, TOKEN_FILE,
+    SERVICE_ACCOUNT_FILE, CALENDAR_ID, TIMEZONE, YOUR_EMAIL,
+)
 
 logger = logging.getLogger(__name__)
 
+# Scopes для Service Account (без gmail — не работает с личным аккаунтом)
+_SA_SCOPES = [
+    "https://www.googleapis.com/auth/calendar",
+    "https://www.googleapis.com/auth/drive.file",
+]
+
 
 def get_google_credentials():
-    """Получить или обновить Google OAuth credentials."""
+    """
+    Приоритет авторизации:
+    1. Service Account (не истекает никогда) — если существует service_account.json
+    2. OAuth токен (истекает через 7 дней в Testing-режиме) — fallback
+    """
+    if os.path.exists(SERVICE_ACCOUNT_FILE):
+        return service_account.Credentials.from_service_account_file(
+            SERVICE_ACCOUNT_FILE, scopes=_SA_SCOPES
+        )
+
+    # OAuth fallback
     creds = None
     if os.path.exists(TOKEN_FILE):
         creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
@@ -35,10 +56,13 @@ def get_google_credentials():
             creds.refresh(Request())
         else:
             raise RuntimeError(
-                f"Требуется повторная авторизация Google.\n"
-                f"Остановите сервис и выполните на сервере:\n"
-                f"  cd /root/calbot && source venv/bin/activate && python google_api.py\n"
-                f"Файл токена: {TOKEN_FILE}"
+                "Требуется авторизация Google.\n"
+                "Вариант 1 (рекомендуется — не истекает):\n"
+                "  Создай Service Account в Google Cloud Console,\n"
+                "  скачай JSON-ключ и положи в /root/calbot/service_account.json\n"
+                "  Поделись календарём с email сервисного аккаунта.\n\n"
+                "Вариант 2 (OAuth, истекает через 7 дней):\n"
+                f"  cd /root/calbot && source venv/bin/activate && python google_api.py"
             )
         with open(TOKEN_FILE, "w") as token:
             token.write(creds.to_json())

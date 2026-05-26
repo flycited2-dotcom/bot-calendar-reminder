@@ -28,7 +28,10 @@ SCHEDULER_INTERVAL = 60
 # Часовой пояс
 TIMEZONE = "Europe/Moscow"
 
-# Пути к Google OAuth
+# Пути к Google Auth
+# Service Account (рекомендуется): токен не истекает никогда
+SERVICE_ACCOUNT_FILE = "/root/calbot/service_account.json"
+# OAuth (fallback): используется если service_account.json отсутствует
 CREDENTIALS_FILE = "/root/calbot/credentials.json"
 TOKEN_FILE = "/root/calbot/token.json"
 
