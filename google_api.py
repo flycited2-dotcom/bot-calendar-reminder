@@ -34,12 +34,12 @@ def get_google_credentials():
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
         else:
-            flow = InstalledAppFlow.from_client_secrets_file(CREDENTIALS_FILE, SCOPES)
-            auth_url, _ = flow.authorization_url(prompt="consent", access_type="offline")
-            print(f"\nОткройте эту ссылку в браузере:\n{auth_url}\n")
-            code = input("Вставьте код авторизации: ").strip()
-            flow.fetch_token(code=code)
-            creds = flow.credentials
+            raise RuntimeError(
+                f"Требуется повторная авторизация Google.\n"
+                f"Остановите сервис и выполните на сервере:\n"
+                f"  cd /root/calbot && source venv/bin/activate && python google_api.py\n"
+                f"Файл токена: {TOKEN_FILE}"
+            )
         with open(TOKEN_FILE, "w") as token:
             token.write(creds.to_json())
     return creds
@@ -245,3 +245,22 @@ def send_email(to: str, subject: str, body_html: str, attachment_paths: list = N
     except Exception as e:
         logger.error(f"Ошибка отправки email: {e}")
         return False
+
+
+if __name__ == "__main__":
+    # Запускать вручную для первичной/повторной авторизации Google:
+    #   cd /root/calbot && source venv/bin/activate && python google_api.py
+    import sys
+    logging.basicConfig(level=logging.INFO)
+    if not os.path.exists(CREDENTIALS_FILE):
+        print(f"❌ Файл {CREDENTIALS_FILE} не найден. Скачай credentials.json из Google Cloud Console.")
+        sys.exit(1)
+    flow = InstalledAppFlow.from_client_secrets_file(CREDENTIALS_FILE, SCOPES)
+    auth_url, _ = flow.authorization_url(prompt="consent", access_type="offline")
+    print(f"\nОткрой в браузере:\n{auth_url}\n")
+    code = input("Вставь код авторизации: ").strip()
+    flow.fetch_token(code=code)
+    creds = flow.credentials
+    with open(TOKEN_FILE, "w") as f:
+        f.write(creds.to_json())
+    print(f"✅ Токен сохранён в {TOKEN_FILE}")

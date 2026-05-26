@@ -319,18 +319,31 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ПРОСМОТР СОБЫТИЙ
 # ==============================================
 
+_GOOGLE_AUTH_MSG = (
+    "⚠️ *Требуется повторная авторизация Google*\n\n"
+    "Выполни на сервере:\n"
+    "`cd /root/calbot && source venv/bin/activate && python google_api.py`"
+)
+
+
 async def today_events(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_allowed(update):
         return
     tz = pytz.timezone(TIMEZONE)
-    await _send_events_list(update.message, datetime.now(tz), "сегодня")
+    try:
+        await _send_events_list(update.message, datetime.now(tz), "сегодня")
+    except RuntimeError:
+        await update.message.reply_text(_GOOGLE_AUTH_MSG, parse_mode="Markdown", reply_markup=MAIN_MENU)
 
 
 async def tomorrow_events(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_allowed(update):
         return
     tz = pytz.timezone(TIMEZONE)
-    await _send_events_list(update.message, datetime.now(tz) + timedelta(days=1), "завтра")
+    try:
+        await _send_events_list(update.message, datetime.now(tz) + timedelta(days=1), "завтра")
+    except RuntimeError:
+        await update.message.reply_text(_GOOGLE_AUTH_MSG, parse_mode="Markdown", reply_markup=MAIN_MENU)
 
 
 async def week_events(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -341,6 +354,11 @@ async def week_events(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = "🗓 *События на неделю:*\n\n"
     has_events = False
     day_names = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+    try:
+        get_events_for_day(now)  # проверяем авторизацию до цикла
+    except RuntimeError:
+        await update.message.reply_text(_GOOGLE_AUTH_MSG, parse_mode="Markdown", reply_markup=MAIN_MENU)
+        return
     for i in range(7):
         day = now + timedelta(days=i)
         events = get_events_for_day(day)
@@ -396,10 +414,14 @@ async def delete_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Собираем события на ближайшие 14 дней
     all_events = []
-    for i in range(14):
-        day = now + timedelta(days=i)
-        for e in get_events_for_day(day):
-            all_events.append(e)
+    try:
+        for i in range(14):
+            day = now + timedelta(days=i)
+            for e in get_events_for_day(day):
+                all_events.append(e)
+    except RuntimeError:
+        await update.message.reply_text(_GOOGLE_AUTH_MSG, parse_mode="Markdown", reply_markup=MAIN_MENU)
+        return
 
     if not all_events:
         await update.message.reply_text("📭 Нет предстоящих событий.", reply_markup=MAIN_MENU)
@@ -637,13 +659,25 @@ async def _save_task_from_store(update_or_query, chat_id: int):
         if attachments:
             links = "".join(f'<li><a href="{a["link"]}">{a["name"]}</a></li>' for a in attachments)
             attach_html = f"<br><b>Вложения:</b><ul>{links}</ul>"
-        send_email(
-            YOUR_EMAIL,
-            f"Задача создана: {title} — {dt_str}",
-            f"<b>{title}</b><br>{dt_str}<br>{comment or ''}{attach_html}",
-        )
+        if YOUR_EMAIL:
+            send_email(
+                YOUR_EMAIL,
+                f"Задача создана: {title} — {dt_str}",
+                f"<b>{title}</b><br>{dt_str}<br>{comment or ''}{attach_html}",
+            )
         user_data_store.pop(chat_id, None)
 
+    except RuntimeError as e:
+        logger.error(f"Ошибка Google авторизации: {e}")
+        msg = (
+            "⚠️ *Требуется повторная авторизация Google*\n\n"
+            "Выполни на сервере:\n"
+            "`cd /root/calbot && source venv/bin/activate && python google_api.py`"
+        )
+        if hasattr(update_or_query, "message"):
+            await update_or_query.message.reply_text(msg, parse_mode="Markdown", reply_markup=MAIN_MENU)
+        else:
+            await update_or_query.edit_message_text(msg, parse_mode="Markdown")
     except Exception as e:
         logger.error(f"Ошибка создания задачи: {e}")
         err = f"❌ Ошибка: {e}"

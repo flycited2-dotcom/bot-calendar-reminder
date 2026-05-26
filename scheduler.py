@@ -134,32 +134,34 @@ def check_and_send_reminders():
 
                 tg_ok = send_telegram_message(tg_text)
 
-                # === Email ===
-                email_html = f"""
-                <html><body style="font-family:Arial,sans-serif">
-                <h2>🔔 Напоминание о задаче</h2>
-                <table style="border-collapse:collapse;width:100%;max-width:500px">
-                  <tr>
-                    <td style="padding:10px;font-weight:bold;background:#f0f0f0">Задача:</td>
-                    <td style="padding:10px">{title}</td>
-                  </tr>
-                  <tr>
-                    <td style="padding:10px;font-weight:bold;background:#f0f0f0">Дата и время:</td>
-                    <td style="padding:10px">{dt_str}</td>
-                  </tr>
-                  <tr>
-                    <td style="padding:10px;font-weight:bold;background:#f0f0f0">До начала:</td>
-                    <td style="padding:10px"><b>{time_label}</b></td>
-                  </tr>
-                  {"<tr><td style='padding:10px;font-weight:bold;background:#f0f0f0'>Комментарий:</td><td style='padding:10px'>" + description + "</td></tr>" if description else ""}
-                </table>
-                </body></html>
-                """
-                email_ok = send_email(
-                    YOUR_EMAIL,
-                    f"🔔 CalBot: {title} — через {time_label}",
-                    email_html
-                )
+                # === Email (только если настроен) ===
+                email_ok = False
+                if YOUR_EMAIL:
+                    email_html = f"""
+                    <html><body style="font-family:Arial,sans-serif">
+                    <h2>🔔 Напоминание о задаче</h2>
+                    <table style="border-collapse:collapse;width:100%;max-width:500px">
+                      <tr>
+                        <td style="padding:10px;font-weight:bold;background:#f0f0f0">Задача:</td>
+                        <td style="padding:10px">{title}</td>
+                      </tr>
+                      <tr>
+                        <td style="padding:10px;font-weight:bold;background:#f0f0f0">Дата и время:</td>
+                        <td style="padding:10px">{dt_str}</td>
+                      </tr>
+                      <tr>
+                        <td style="padding:10px;font-weight:bold;background:#f0f0f0">До начала:</td>
+                        <td style="padding:10px"><b>{time_label}</b></td>
+                      </tr>
+                      {"<tr><td style='padding:10px;font-weight:bold;background:#f0f0f0'>Комментарий:</td><td style='padding:10px'>" + description + "</td></tr>" if description else ""}
+                    </table>
+                    </body></html>
+                    """
+                    email_ok = send_email(
+                        YOUR_EMAIL,
+                        f"🔔 CalBot: {title} — через {time_label}",
+                        email_html
+                    )
 
                 if tg_ok or email_ok:
                     sent[reminder_key] = {
@@ -175,9 +177,21 @@ def check_and_send_reminders():
 def main():
     """Бесконечный цикл планировщика."""
     logger.info("Scheduler CalBot запущен ✅")
+    _auth_error_notified = False
     while True:
         try:
             check_and_send_reminders()
+            _auth_error_notified = False
+        except RuntimeError as e:
+            # Ошибка авторизации Google — уведомляем пользователя один раз
+            logger.error(f"Ошибка авторизации Google: {e}")
+            if not _auth_error_notified:
+                send_telegram_message(
+                    f"⚠️ *Требуется повторная авторизация Google*\n\n"
+                    f"Выполни на сервере:\n"
+                    f"`cd /root/calbot && source venv/bin/activate && python google_api.py`"
+                )
+                _auth_error_notified = True
         except Exception as e:
             logger.error(f"Ошибка в планировщике: {e}")
         time.sleep(SCHEDULER_INTERVAL)

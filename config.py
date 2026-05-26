@@ -9,8 +9,8 @@ TELEGRAM_CHAT_ID = "-5216399246"
 # OpenAI (Whisper для транскрипции голосовых)
 OPENAI_API_KEY = "ВАШ_OPENAI_API_KEY"       # platform.openai.com
 
-# Gmail / почта
-YOUR_EMAIL = "ВАШ_EMAIL@gmail.com"
+# Gmail / почта (оставь пустым "" чтобы отключить email-уведомления)
+YOUR_EMAIL = ""
 
 # Google API scopes
 SCOPES = [
