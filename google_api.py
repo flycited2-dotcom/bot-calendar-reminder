@@ -5,9 +5,13 @@
 
 import os
 import base64
+import json
 import logging
 import mimetypes
+import urllib.parse
 from datetime import datetime, timedelta
+
+import requests
 from email.header import Header
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -67,6 +71,51 @@ def get_google_credentials():
         with open(TOKEN_FILE, "w") as token:
             token.write(creds.to_json())
     return creds
+
+
+def get_reauth_url() -> str:
+    """Ссылка для повторной авторизации, когда refresh_token истёк."""
+    with open(CREDENTIALS_FILE) as f:
+        client = json.load(f)["installed"]
+    params = {
+        "response_type": "code",
+        "client_id": client["client_id"],
+        "redirect_uri": "urn:ietf:wg:oauth:2.0:oob",
+        "scope": " ".join(SCOPES),
+        "access_type": "offline",
+        "prompt": "consent",
+    }
+    return client["auth_uri"] + "?" + urllib.parse.urlencode(params)
+
+
+def reauth_with_code(code: str) -> bool:
+    """Обменивает код авторизации на новый refresh_token, перезаписывает token.json."""
+    with open(CREDENTIALS_FILE) as f:
+        client = json.load(f)["installed"]
+    resp = requests.post(client["token_uri"], data={
+        "code": code,
+        "client_id": client["client_id"],
+        "client_secret": client["client_secret"],
+        "redirect_uri": "urn:ietf:wg:oauth:2.0:oob",
+        "grant_type": "authorization_code",
+    })
+    data = resp.json()
+    if "refresh_token" not in data:
+        logger.error(f"Реавторизация не удалась: {data}")
+        return False
+    token_json = {
+        "token": data["access_token"],
+        "refresh_token": data["refresh_token"],
+        "token_uri": client["token_uri"],
+        "client_id": client["client_id"],
+        "client_secret": client["client_secret"],
+        "scopes": SCOPES,
+        "universe_domain": "googleapis.com",
+    }
+    with open(TOKEN_FILE, "w") as f:
+        json.dump(token_json, f)
+    logger.info("Google token обновлён через /reauth")
+    return True
 
 
 def get_calendar_service():

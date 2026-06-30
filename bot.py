@@ -37,6 +37,8 @@ from config import (
 from google_api import (
     create_calendar_event,
     get_events_for_day,
+    get_reauth_url,
+    reauth_with_code,
     send_email,
     upload_to_drive,
 )
@@ -294,6 +296,21 @@ async def logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     text = result.stdout.strip() or "Лог пуст."
     await update.message.reply_text(f"```\n{text[-3500:]}\n```", parse_mode="Markdown")
+
+
+async def reauth_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_allowed(update):
+        return
+    url = get_reauth_url()
+    await update.message.reply_text(
+        "🔑 *Переавторизация Google*\n\n"
+        "1. Перейди по ссылке и разреши доступ\n"
+        "2. Скопируй код (начинается с `4/`)\n"
+        "3. Пришли его сюда следующим сообщением\n\n"
+        f"{url}",
+        parse_mode="Markdown",
+    )
+    context.user_data["awaiting_oauth_code"] = True
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -897,6 +914,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     text = update.message.text.strip()
 
+    # Код авторизации после /reauth
+    if context.user_data.pop("awaiting_oauth_code", False):
+        if reauth_with_code(text):
+            await update.message.reply_text("✅ Google переавторизован, токен обновлён.", reply_markup=MAIN_MENU)
+        else:
+            await update.message.reply_text("❌ Не удалось обновить токен. Проверь код и попробуй /reauth снова.", reply_markup=MAIN_MENU)
+        return
+
     # Кнопки меню
     if text == BTN_TODAY:
         await today_events(update, context)
@@ -1005,6 +1030,7 @@ def main():
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("restart", restart_command))
     app.add_handler(CommandHandler("logs", logs_command))
+    app.add_handler(CommandHandler("reauth", reauth_command))
     app.add_handler(CommandHandler("delete", delete_start))
     app.add_handler(CommandHandler("today", today_events))
     app.add_handler(CommandHandler("tomorrow", tomorrow_events))
